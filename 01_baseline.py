@@ -38,7 +38,7 @@ X = df.drop(columns=["target"])
 y = df["target"]
 
 # Simple encoding: categoricals -> category codes (crude; revisit encoding in hours 2-4)
-cat_cols = X.select_dtypes(include=["object", "str", "category"]).columns.tolist()
+cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
 for c in cat_cols:
     X[c] = X[c].astype("category").cat.codes  # -1 for NaN, fine for a crude pass
 

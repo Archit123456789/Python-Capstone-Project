@@ -26,7 +26,7 @@ subgroup_cols = ["race", "gender", "age"]
 X = df.drop(columns=["target"])
 y = df["target"]
 
-cat_cols = X.select_dtypes(include=["object", "str", "category"]).columns.tolist()
+cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
 for c in cat_cols:
     X[c] = X[c].astype("category")  # LightGBM handles categoricals natively, no manual encoding needed
 
