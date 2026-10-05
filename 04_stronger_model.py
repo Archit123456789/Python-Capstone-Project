@@ -8,7 +8,15 @@ import pandas as pd
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-import lightgbm as lgb
+
+try:
+    import lightgbm as lgb
+    MODEL_NAME = "LightGBM"
+except Exception as e:  # ImportError, or OSError when the libomp system library is missing (common on macOS)
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    lgb = None
+    MODEL_NAME = "HistGradientBoosting (scikit-learn fallback)"
+    print(f"LightGBM unavailable ({type(e).__name__}); using scikit-learn HistGradientBoostingClassifier instead.")
 
 RANDOM_STATE = 42
 N_BOOT = 1000
@@ -28,21 +36,28 @@ y = df["target"]
 
 cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
 for c in cat_cols:
-    X[c] = X[c].astype("category")  # LightGBM handles categoricals natively, no manual encoding needed
+    if lgb is not None:
+        X[c] = X[c].astype("category")  # LightGBM handles categoricals natively
+    else:
+        X[c] = X[c].astype("category").cat.codes.replace(-1, np.nan)  # ordinal codes; NaN stays missing
 
 X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
     X, y, df.index, test_size=0.2, random_state=RANDOM_STATE, stratify=y
 )
 
-clf = lgb.LGBMClassifier(
-    n_estimators=300, learning_rate=0.05, num_leaves=31,
-    random_state=RANDOM_STATE, verbosity=-1
-)
-clf.fit(X_train, y_train, categorical_feature=cat_cols)
+if lgb is not None:
+    clf = lgb.LGBMClassifier(
+        n_estimators=300, learning_rate=0.05, num_leaves=31,
+        random_state=RANDOM_STATE, verbosity=-1
+    )
+    clf.fit(X_train, y_train, categorical_feature=cat_cols)
+else:
+    clf = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.05, random_state=RANDOM_STATE)
+    clf.fit(X_train, y_train)
 
 probs = clf.predict_proba(X_test)[:, 1]
 agg_auc = roc_auc_score(y_test, probs)
-print(f"LightGBM aggregate AUC: {agg_auc:.4f}  (logistic regression was 0.644)")
+print(f"{MODEL_NAME} aggregate AUC: {agg_auc:.4f}  (logistic regression was 0.644)")
 
 y_test_r = y_test.reset_index(drop=True)
 probs_r = pd.Series(probs).reset_index(drop=True)
@@ -77,6 +92,6 @@ for g in AGE_ORDER:
     print(f"{g:15s}{n:8d}{point:12.3f}   [{lo:.3f}, {hi:.3f}]")
 
 lgbm_age_df = pd.DataFrame(lgbm_age_results)
-joblib.dump({"agg_auc": agg_auc, "age_results": lgbm_age_df, "probs": probs, "y_test": y_test_r,
+joblib.dump({"model_name": MODEL_NAME, "agg_auc": agg_auc, "age_results": lgbm_age_df, "probs": probs, "y_test": y_test_r,
              "subgroups": subgroups}, "lgbm_results.joblib")
 print("\nSaved lgbm_results.joblib")

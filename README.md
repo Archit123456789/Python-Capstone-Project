@@ -1,31 +1,62 @@
-# Subgroup Generalization Audit — Hospital Readmission Prediction
+# Subgroup Generalization Audit: Hospital Readmission Prediction
 
 ## 1. What does this do?
-It trains a standard readmission-risk model on real hospital data, then checks whether the model's headline accuracy number actually holds up for every patient group — or whether it's hiding a large gap for one group behind a good-looking average.
+It trains a standard readmission-risk model on real hospital data, then checks whether the model's headline accuracy number holds for every patient group, or whether a good-looking average is hiding a large gap for one group.
 
 ## 2. How do I run it?
+Clone, install, and run the scripts in order **from the repository folder** (they read `data/diabetic_data.csv` relative to it):
+
 ```bash
-pip install -r requirements.txt
-python3 01_baseline.py          # hour 1: crude end-to-end baseline, one AUC number
-python3 02_subgroup_audit.py    # hours 2-4: bootstrap CI audit by age/gender/race
-python3 03_plots.py             # hour 5: evaluation figures
-python3 04_stronger_model.py    # extension: does the gap survive a stronger model? (LightGBM)
-python3 05_mechanism_check.py   # extension: what actually drives the gap? (diagnosis complexity)
+git clone https://github.com/Archit123456789/Python-Capstone-Project.git
+cd Python-Capstone-Project
+python3 -m pip install -r requirements.txt
+python3 01_baseline.py            # crude end-to-end baseline, one AUC number
+python3 02_subgroup_audit.py      # bootstrap CI audit by age / gender / race, plus calibration
+python3 03_plots.py               # evaluation figures
+python3 04_stronger_model.py      # does the gap survive a stronger model?
+python3 05_mechanism_check.py     # first mechanism hypothesis (diagnosis complexity)
+python3 06_mechanism_plot.py
+python3 07_diagnosis_binning.py   # direct test of that hypothesis at full resolution
+python3 08_charlson_index.py      # second direct test (Charlson comorbidity index)
 ```
-Data: `data/diabetic_data.csv` (UCI "Diabetes 130-US hospitals" dataset, 101,766 encounters) is included in this repo. No API key or account needed.
+Each script needs the previous ones to have run (they pass results along as `.joblib` files, which are generated and not stored in the repo).
+
+* **Data:** `data/diabetic_data.csv` (UCI "Diabetes 130-US hospitals", 101,766 encounters) is included. No account or API key is needed.
+* **LightGBM:** `04_stronger_model.py` uses LightGBM when it imports. If it does not (on macOS this usually means the `libomp` system library is missing: `brew install libomp`), the script automatically falls back to scikit-learn's `HistGradientBoostingClassifier` and says so on the first line of output. The fallback gives a slightly higher aggregate AUC (0.688 vs 0.657) and shows the same age gap.
+* Last verified from a fresh clone on 2026-10-05: all eight scripts run start to finish.
 
 ## 3. What did you find?
-The aggregate model looks fine (AUC = 0.644, 95% CI [0.632, 0.656]) — but that single number hides a real age gradient. The model discriminates well for patients under 30 (AUC ≈ 0.81) and is barely better than chance for patients over 80 (AUC ≈ 0.58–0.60); the confidence intervals for the youngest and oldest groups don't overlap, so this isn't sample-size noise. Gender showed no meaningful gap (0.648 vs 0.640). Race showed no gap between the two largest groups (Caucasian, African American); Hispanic/Other/Asian subgroups were too small (n=123–404) to draw a real conclusion, and I'm reporting that honestly rather than claiming a finding off a small sample.
+**Aggregate:** logistic regression gets AUC 0.644, 95% CI [0.632, 0.656], well calibrated overall (ECE 0.009).
 
-The more precise diagnosis: for elderly patients, the model stays well-calibrated on average (ECE ≈ 0.009–0.012) even though it can't discriminate between individuals well (low AUC) — it's not confidently wrong, it's just not separating cases. For young patients it's the opposite: good discrimination, noisier calibration in the sparse high-probability bins (small n there, so treat with caution).
+**That number hides an age gradient.** Discrimination is good for young patients and weak for the oldest:
 
-**The gap isn't a weak-model artifact.** Swapping logistic regression for LightGBM (much higher capacity) barely moves the aggregate number (0.644 → 0.657) and reproduces the identical age gradient, so this is a property of the task, not the model.
+| Age band | n | AUC | 95% CI |
+|---|---|---|---|
+| [20-30) | 324 | 0.808 | [0.722, 0.874] |
+| [60-70) | 4,547 | 0.624 | [0.601, 0.650] |
+| [80-90) | 3,414 | 0.603 | [0.574, 0.630] |
+| [90-100) | 576 | 0.581 | [0.508, 0.657] |
 
-**The real driver is diagnosis complexity, not age itself.** Age-band AUC correlates with average number of diagnoses at -0.80 — patients accumulate more diagnoses with age (2.7 in the youngest band vs. 7.9 in the oldest), and more concurrent diagnoses makes individual readmission risk genuinely noisier to predict. A `diag_3`-missing rate of 60% in the youngest band looked like a data-quality problem at first, but it isn't: young patients simply don't have a third diagnosis to record, so the missingness is a proxy for lower complexity, not lost information. This reframes the finding from "the model is worse for old patients" (an age story) to "the model is worse for multimorbid patients" (a complexity story, and a more clinically actionable one — this would motivate flagging high-diagnosis-count patients for a different triage path regardless of age).
+The intervals for [20-30) and [90-100) do not overlap, so this is not sample-size noise. The youngest group is itself small, so I lean on the whole downward trend across the middle bands (thousands of patients each), not only the two ends.
 
-**Headline: aggregate AUC of 0.64 hides a real gap that tracks diagnosis complexity, not model choice — patients with few diagnoses are predicted well (AUC ≈ 0.80) and patients with many concurrent diagnoses are predicted barely better than chance (AUC ≈ 0.60), and this persists even with a much stronger model.**
+**Gender:** no meaningful gap (0.648 vs 0.640; intervals overlap).
+**Race:** Caucasian 0.642 and African American 0.645, no gap. Hispanic (n=404, AUC 0.738 [0.662, 0.812]) and Other (n=276, [0.557, 0.825]) have few readmissions and wide intervals, and Asian (n=123) fell below the audit threshold, so I do not draw conclusions about them.
+
+**Calibration:** for the oldest groups the model stays well calibrated on average (ECE 0.009 at 70-90, 0.018 at 90-100) while discriminating poorly: it is not confidently wrong, it just does not separate cases. Young groups have higher calibration error (0.04 to 0.06), but with few patients in the high-probability bins.
+
+**The gap is not a weak-model artifact.** LightGBM raises the aggregate AUC only from 0.644 to 0.657 and reproduces the gradient (20-30: 0.800 [0.725, 0.870]; 90-100: 0.598 [0.533, 0.662]; intervals do not overlap). The scikit-learn fallback model (aggregate 0.688) does too.
+
+**What I could not explain, and a claim I retracted.** Age-band AUC correlates with average number of diagnoses at r = -0.80 over nine age-band points (`05_mechanism_check.py`), which suggested that diagnosis complexity drives the gap. I first reported that as the cause. Testing it directly (`07`, `08`) does not support it:
+
+* Binning patients by their actual diagnosis count, r = -0.795 over 10 bins, but that is carried entirely by two tiny bins (n=53 with AUC 0.993; n=33 with AUC 0.344). Among bins with at least 500 patients, r = +0.07: AUC sits between 0.635 and 0.683 with no trend.
+* Charlson comorbidity index (diabetes excluded): AUC 0.664, 0.643, 0.599, 0.651 for scores 0, 1-2, 3-4, 5+. It is not monotonic, and the last two intervals overlap the others.
+
+So **the cause of the age gap is unexplained.** The correlation across age bands shows that age and diagnosis count move together, not that one explains the other, which is why the claim was retracted.
+
+**Headline:** an aggregate AUC of 0.64 hides a real gap by age (about 0.81 for patients in their twenties vs about 0.58 for those over 90, non-overlapping intervals), it persists with a much stronger model, and I have not found its cause.
 
 ## 4. What would you do next, given more time?
-- Test whether conditioning directly on diagnosis count (rather than age) as the stratification variable produces an even cleaner separation than age does — age may just be a proxy for the real driver
-- Extend the race audit with a larger sample or an external dataset to get real conclusions for the underrepresented subgroups instead of wide, inconclusive CIs
-- Try a model that explicitly handles multimorbidity structure (e.g., diagnosis-code embeddings or a model that treats the diagnosis list as a set rather than three flat columns) to see if the complexity-driven gap can be closed
+* **Split by patient.** These scripts use a random row-level split, but about 30% of encounters come from repeat patients, so the same person can land in train and test and inflate scores. The extended version ([readmission-subgroup-audit](https://github.com/Archit123456789/readmission-subgroup-audit)) splits by patient: AUC fell from 0.688 to 0.676 and the age gap persisted.
+* **Replicate on a second, more recent dataset.** This data ends in 2008, and nothing here shows the gap appears elsewhere.
+* **Test other candidate causes directly** (for example how complete patients' records are, or admission source) with the same intervals-first rule, and run repeated splits so intervals reflect split variance.
+* **Try to close the gap** (reweighting, group-specific thresholds). Either outcome would be informative.
